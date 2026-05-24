@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据分析系统 - 高分版</title>
+    <!-- Bootstrap 5 样式库，让界面好看 -->
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <!-- ECharts 图表库，用于画交互式图表 -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.3.3/echarts.min.js"></script>
+    <style>
+        .chart-box { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 15px; }
+        .progress { height: 25px; }
+    </style>
+</head>
+<body>
+    <!-- 顶部导航栏 -->
+    <nav class="navbar navbar-dark bg-dark">
+        <span class="navbar-brand ms-3">📊 数据分析系统</span>
+        <div>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('upload')">上传</button>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('preview')">预览</button>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('clean')">清洗</button>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('visualize')">可视化</button>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('cluster')">聚类分析</button>
+            <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('history')">历史记录</button>
+            <button class="btn btn-outline-warning btn-sm me-3" onclick="showLogin()">登录</button>
+        </div>
+    </nav>
+
+    <!-- 主内容区域，不同的功能页面会动态显示在这里 -->
+    <div class="container mt-3" id="mainContent"></div>
+
+    <script>
+        // ==================== 全局变量 ====================
+        let currentColumns = [];         // 当前数据的列名
+        let currentPreviewRows = [];     // 当前数据的前10行（用于预览）
+        let isLoggedIn = false;          // 是否已登录（简单模拟）
+
+        // ==================== 页面路由 ====================
+        function showPage(page) {
+            let html = '';
+            switch(page) {
+                case 'upload':
+                    html = `
+                        <h4>📤 上传数据文件</h4>
+                        <input type="file" id="fileInput" class="form-control mb-2" accept=".csv,.xlsx">
+                        <button class="btn btn-primary" onclick="uploadFile()">上传并预览</button>
+                        <div id="uploadStatus" class="mt-2"></div>
+                    `;
+                    break;
+                case 'preview':
+                    html = `
+                        <h4>📋 数据预览</h4>
+                        ${currentPreviewRows.length > 0 ? makeTable(currentPreviewRows) : '<div class="alert alert-warning">请先上传数据</div>'}
+                        <a href="/export" class="btn btn-success mt-2">📥 导出处理后的CSV</a>
+                    `;
+                    break;
+                case 'clean':
+                    html = `
+                        <h4>🧹 数据清洗</h4>
+                        <div class="row mb-3">
+                            <div class="col-md-4">
+                                <label class="form-label">缺失值处理策略</label>
+                                <select id="cleanMethod" class="form-select">
+                                    <option value="median">数值列填中位数 / 非数值列填众数</option>
+                                    <option value="mean">数值列填均值</option>
+                                    <option value="drop">直接删除含缺失值的行</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">异常值检测 (Z-score 阈值)</label>
+                                <input id="zThreshold" type="number" class="form-control" value="3" step="0.5">
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <button class="btn btn-warning w-100" onclick="cleanData()">执行清洗</button>
+                            </div>
+                        </div>
+                        <div id="cleanResult" class="mt-2"></div>
+                    `;
+                    break;
+                case 'visualize':
+                    html = `
+                        <h4>📈 可视化分析</h4>
+                        <div class="row mb-3">
+                            <div class="col-md-3">
+                                <label class="form-label">X 轴列</label>
+                                <select id="xColSelect" class="form-select">${getColumnOptions()}</select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Y 轴列</label>
+                                <select id="yColSelect" class="form-select">${getColumnOptions()}</select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">图表类型</label>
+                                <select id="chartTypeSelect" class="form-select">
+                                    <option value="bar">柱状图</option>
+                                    <option value="line">折线图</option>
+                                    <option value="scatter">散点图</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 d-flex align-items-end">
+                                <button class="btn btn-secondary w-100" onclick="drawCustomChart()">生成自定义图表</button>
+                            </div>
+                        </div>
+                        <!-- 预设的三个默认图表区域 -->
+                        <div class="row">
+                            <div class="col-md-6 chart-box"><div id="defaultChart1" style="height:400px;"></div></div>
+                            <div class="col-md-6 chart-box"><div id="defaultChart2" style="height:400px;"></div></div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-12 chart-box"><div id="defaultChart3" style="height:400px;"></div></div>
+                        </div>
+                    `;
+                    break;
+                case 'cluster':
+                    html = `
+                        <h4>🤖 聚类分析 (多算法对比)</h4>
+                        <button class="btn btn-success mb-3" onclick="runClusterComparison()">开始聚类对比</button>
+                        <div id="clusterScoreArea" class="mb-3"></div>
+                        <div class="row">
+                            <div class="col-md-6 chart-box"><div id="clusterKMeans" style="height:400px;"></div><p class="text-center fw-bold">K-Means 聚类结果</p></div>
+                            <div class="col-md-6 chart-box"><div id="clusterDBSCAN" style="height:400px;"></div><p class="text-center fw-bold">DBSCAN 聚类结果</p></div>
+                        </div>
+                    `;
+                    break;
+                case 'history':
+                    loadHistory();
+                    return; // loadHistory 自己会改写 mainContent
+                default: html = '<h4>欢迎使用数据分析系统</h4>';
+            }
+            document.getElementById('mainContent').innerHTML = html;
+            // 如果切换到可视化页面，自动初始化三个默认图表
+            if (page === 'visualize') setTimeout(initDefaultCharts, 100);
+        }
+
+        // 生成列选择器的 <option> 列表
+        function getColumnOptions() {
+            return currentColumns.map(col => `<option value="${col}">${col}</option>`).join('');
+        }
+
+        // 将预览数据生成 HTML 表格
+        function makeTable(rows) {
+            if (!rows || rows.length === 0) return '<p>暂无数据</p>';
+            let html = '<table class="table table-bordered table-striped"><thead><tr>';
+            currentColumns.forEach(col => html += `<th>${col}</th>`);
+            html += '</tr></thead><tbody>';
+            rows.forEach(row => {
+                html += '<tr>';
+                currentColumns.forEach(col => {
+                    let val = row[col] !== undefined ? row[col] : '';
+                    html += `<td>${val}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            return html;
+        }
+
+        // ==================== 接口调用函数 ====================
+        // 1. 上传文件
+        async function uploadFile() {
+            let fileInput = document.getElementById('fileInput');
+            let file = fileInput.files[0];
+            if (!file) { alert('请选择文件'); return; }
+            
+            let formData = new FormData();
+            formData.append('file', file);
+            
+            let response = await fetch('/upload', { method: 'POST', body: formData });
+            let data = await response.json();
+            if (data.columns) {
+                currentColumns = data.columns;
+                currentPreviewRows = data.preview;
+                document.getElementById('uploadStatus').innerHTML = 
+                    `<div class="alert alert-success">✅ 上传成功！共 ${data.shape[0]} 行，${data.shape[1]} 列</div>`;
+            } else {
+                alert('上传失败：' + (data.error || '未知错误'));
+            }
+        }
+
+        // 2. 数据清洗
+        async function cleanData() {
+            let method = document.getElementById('cleanMethod').value;
+            let zThreshold = parseFloat(document.getElementById('zThreshold').value);
+            let response = await fetch('/clean', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ method: method, z_threshold: zThreshold })
+            });
+            let data = await response.json();
+            if (data.preview) {
+                currentPreviewRows = data.preview;
+                document.getElementById('cleanResult').innerHTML = 
+                    `<div class="alert alert-info">🧹 ${data.message}</div>`;
+            } else {
+                alert('清洗失败');
+            }
+        }
+
+        // 3. 自定义图表（可视化页面）
+        async function drawCustomChart() {
+            let xCol = document.getElementById('xColSelect').value;
+            let yCol = document.getElementById('yColSelect').value;
+            let chartType = document.getElementById('chartTypeSelect').value;
+            
+            let response = await fetch(`/chart?x=${encodeURIComponent(xCol)}&y=${encodeURIComponent(yCol)}`);
+            let data = await response.json();
+            if (!data.data) { alert('获取图表数据失败'); return; }
+            
+            // 在第一个默认图表位置绘制自定义图表
+            let chartDom = document.getElementById('defaultChart1');
+            let chart = echarts.init(chartDom);
+            chart.setOption({
+                title: { text: `${xCol} vs ${yCol}` },
+                xAxis: { name: xCol, type: 'value' },
+                yAxis: { name: yCol, type: 'value' },
+                series: [{
+                    type: chartType,
+                    data: data.data,  // [[x1,y1], [x2,y2], ...]
+                    symbolSize: 8
+                }]
+            });
+        }
+
+        // 4. 初始化三个默认图表（可视化页面）
+        function initDefaultCharts() {
+            if (currentPreviewRows.length === 0) return;
+            
+            // 图表1：柱状图 - 以第一列为X轴，第二列为Y轴（如果有数值列）
+            let chart1 = echarts.init(document.getElementById('defaultChart1'));
+            let xData = currentPreviewRows.map(r => Object.values(r)[0]);
+            let yData = currentPreviewRows.map(r => {
+                let vals = Object.values(r);
+                return typeof vals[1] === 'number' ? vals[1] : 0;
+            });
+            chart1.setOption({
+                title: { text: '数据柱状图' },
+                xAxis: { type: 'category', data: xData, axisLabel: { rotate: 30 } },
+                yAxis: { type: 'value' },
+                series: [{ type: 'bar', data: yData }]
+            });
+
+            // 图表2：折线图 - 第一列为X轴，选择第一个数值列为Y轴
+            let chart2 = echarts.init(document.getElementById('defaultChart2'));
+            let numericCol = currentColumns.find(c => typeof currentPreviewRows[0][c] === 'number');
+            let yData2 = numericCol ? currentPreviewRows.map(r => r[numericCol]) : yData;
+            chart2.setOption({
+                title: { text: '数据趋势' },
+                xAxis: { type: 'category', data: xData, axisLabel: { rotate: 30 } },
+                yAxis: { type: 'value' },
+                series: [{ type: 'line', data: yData2 }]
+            });
+
+            // 图表3：饼图 - 以第一列为名称，第一个数值列为数值
+            let chart3 = echarts.init(document.getElementById('defaultChart3'));
+            let pieData = currentPreviewRows.slice(0, 10).map(r => ({
+                name: Object.values(r)[0],
+                value: numericCol ? (r[numericCol] || 0) : 1
+            }));
+            chart3.setOption({
+                title: { text: '数据占比' },
+                series: [{ type: 'pie', data: pieData, radius: '60%' }]
+            });
+        }
+
+        // 5. 聚类分析（多算法对比）
+        async function runClusterComparison() {
+            let response = await fetch('/cluster', { method: 'POST' });
+            let data = await response.json();
+            if (!data.scores) { alert('聚类失败'); return; }
+            
+            // 显示轮廓系数进度条
+            let scoreHtml = '<div class="row">';
+            for (let algo in data.scores) {
+                let score = data.scores[algo];
+                let percent = (score * 100).toFixed(1);
+                let barColor = score > 0.6 ? 'bg-success' : (score > 0.4 ? 'bg-warning' : 'bg-danger');
+                scoreHtml += `
+                    <div class="col-6">
+                        <strong>${algo}</strong> 轮廓系数：${score.toFixed(3)}
+                        <div class="progress" style="height:20px;">
+                            <div class="progress-bar ${barColor}" style="width:${percent}%">${percent}%</div>
+                        </div>
+                    </div>`;
+            }
+            scoreHtml += '</div>';
+            document.getElementById('clusterScoreArea').innerHTML = scoreHtml;
+
+            // 绘制 K-Means 散点图
+            if (data.kmeans) {
+                let chartKM = echarts.init(document.getElementById('clusterKMeans'));
+                chartKM.setOption({
+                    title: { text: 'K-Means' },
+                    xAxis: {}, yAxis: {},
+                    series: [{ type: 'scatter', data: data.kmeans, symbolSize: 8 }]
+                });
+            }
+
+            // 绘制 DBSCAN 散点图
+            if (data.dbscan) {
+                let chartDB = echarts.init(document.getElementById('clusterDBSCAN'));
+                chartDB.setOption({
+                    title: { text: 'DBSCAN' },
+                    xAxis: {}, yAxis: {},
+                    series: [{ type: 'scatter', data: data.dbscan, symbolSize: 8 }]
+                });
+            }
+        }
+
+        // 6. 历史记录加载
+        async function loadHistory() {
+            let response = await fetch('/history');
+            let data = await response.json();
+            let html = '<h4>📋 历史记录</h4>';
+            if (data.error) {
+                html += `<div class="alert alert-danger">${data.error}</div>`;
+            } else if (data.length === 0) {
+                html += '<p>暂无历史记录</p>';
+            } else {
+                html += `<table class="table table-striped"><thead><tr><th>文件名</th><th>分析类型</th><th>时间</th></tr></thead><tbody>`;
+                data.forEach(r => {
+                    html += `<tr><td>${r.filename}</td><td>${r.type}</td><td>${r.time}</td></tr>`;
+                });
+                html += '</tbody></table>';
+            }
+            html += '<button class="btn btn-secondary mt-2" onclick="showPage(\'upload\')">返回</button>';
+            document.getElementById('mainContent').innerHTML = html;
+        }
+
+        // ==================== 用户登录与注册 ====================
+        function showLogin() {
+            let modalHtml = `
+                <div class="modal show d-block" tabindex="-1" id="loginModal">
+                  <div class="modal-dialog">
+                    <div class="modal-content">
+                      <div class="modal-header"><h5>用户登录 / 注册</h5></div>
+                      <div class="modal-body">
+                        <input id="loginUsername" class="form-control mb-2" placeholder="用户名">
+                        <input id="loginPassword" type="password" class="form-control mb-2" placeholder="密码">
+                        <button class="btn btn-primary me-2" onclick="login()">登录</button>
+                        <button class="btn btn-outline-secondary" onclick="register()">注册</button>
+                      </div>
+                      <div class="modal-footer">
+                        <button class="btn btn-sm btn-light" onclick="closeLogin()">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>`;
+            let div = document.createElement('div');
+            div.innerHTML = modalHtml;
+            document.body.appendChild(div.firstElementChild);
+        }
+
+        function closeLogin() {
+            let modal = document.getElementById('loginModal');
+            if (modal) modal.remove();
+        }
+
+        async function login() {
+            let username = document.getElementById('loginUsername').value;
+            let password = document.getElementById('loginPassword').value;
+            let res = await fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            let data = await res.json();
+            if (data.status === 'success') {
+                alert('登录成功');
+                isLoggedIn = true;
+                closeLogin();
+            } else {
+                alert('登录失败：' + data.message);
+            }
+        }
+
+        async function register() {
+            let username = document.getElementById('loginUsername').value;
+            let password = document.getElementById('loginPassword').value;
+            let res = await fetch('/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            let data = await res.json();
+            if (data.status === 'success') {
+                alert('注册成功，请登录');
+            } else {
+                alert('注册失败：' + data.message);
+            }
+        }
+
+        // ==================== 启动 ====================
+        // 页面加载完成后默认显示上传页面
+        window.onload = function() {
+            showPage('upload');
+        };
+    </script>
+</body>
+</html>
