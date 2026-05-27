@@ -1,9 +1,11 @@
 import io
 import os
 from re import S
+
 #数据库 用户信息登记
 import sqlite3
 import traceback
+
 # 时间 供历史记录使用
 from datetime import datetime
 
@@ -251,7 +253,7 @@ def cluster_analysis():
     global current_df
     try:
         df = get_data()
-        # 选择数据列（只使用原始数值列，防止之前添加的 cluster_kmeans 污染）
+        # 选择数据列（只使用原始数值列）
         numeric_cols = df.select_dtypes(include='number').columns.tolist()
         # 排除可能残留的聚类标签列
         if 'cluster_kmeans' in numeric_cols:
@@ -276,6 +278,9 @@ def cluster_analysis():
         #轮廓系数评估
         results['scores']['K-Means'] = round(silhouette_score(scaled, kmeans_labels), 4)
         results['kmeans'] = [[float(plot_x[i]), float(plot_y[i])] for i in range(len(plot_x))]
+        results['kmeans_labels'] = kmeans_labels.tolist()  # 将 numpy 数组转为列表
+
+
 
         #DBSCAN
         try:
@@ -297,6 +302,7 @@ def cluster_analysis():
             # 同样的，轮廓系数评估
             results['scores']['DBSCAN'] = round(score, 4)
             results['dbscan'] = [[float(plot_x[i]), float(plot_y[i])] for i in range(len(plot_x))]
+            results['dbscan_labels'] = dbscan_labels.tolist()  # 新增
         except Exception as e:
             results['scores']['DBSCAN'] = 0.0
             results['dbscan'] = [[float(plot_x[i]), float(plot_y[i])] for i in range(len(plot_x))]
@@ -309,6 +315,9 @@ def cluster_analysis():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+
 
 # 注册 登录与历史记录
 @app.route('/register', methods=['POST'])
@@ -376,6 +385,11 @@ def get_history():
         {'filename': r[0], 'type': r[1], 'time': r[3]}
         for r in records
     ])
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'status': 'success'})
 
 if __name__ == "__main__":
     app.run(debug=True)
