@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>智能数据分析系统 | 多维数据洞察</title>
+    <title>数据分析系统</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.3.3/echarts.min.js"></script>
@@ -17,13 +17,15 @@
         .cluster-score-card { background: #f8f9fa; border-radius: 16px; padding: 12px 20px; }
         @media (max-width: 768px) { .navbar .btn-sm { font-size: 0.7rem; padding: 0.25rem 0.5rem; } }
         .diagnostic-box { background: #e9ecef; border-radius: 8px; padding: 8px 12px; font-size: 0.8rem; margin-top: 10px; }
+        #clusterKMeans, #clusterDBSCAN { height: 400px; width: 100%; }
+        .four-chart-card { height: 380px; width: 100%; }
     </style>
+<base target="_blank">
 </head>
 <body>
-
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
     <div class="container-fluid">
-        <span class="navbar-brand"><i class="fas fa-chart-line"></i> 棱镜数据分析系统</span>
+        <span class="navbar-brand"><i class="fas fa-chart-line"></i> 数据分析系统</span>
         <div class="d-flex flex-wrap gap-1" id="navButtons">
             <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('upload')"><i class="fas fa-upload"></i> 上传</button>
             <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('preview')"><i class="fas fa-table"></i> 预览</button>
@@ -31,11 +33,12 @@
             <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('visualize')"><i class="fas fa-chart-simple"></i> 可视化</button>
             <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('cluster')"><i class="fas fa-project-diagram"></i> 聚类分析</button>
             <button class="btn btn-outline-light btn-sm me-1" onclick="showPage('history')"><i class="fas fa-history"></i> 历史记录</button>
-            <button class="btn btn-outline-warning btn-sm me-2" onclick="showLoginModal()"><i class="fas fa-user-circle"></i> 登录/注册</button>
+            <span id="userInfo"></span>
+            <button class="btn btn-outline-warning btn-sm me-2" id="loginBtn" onclick="showLoginModal()"><i class="fas fa-user-circle"></i> 登录/注册</button>
+            <button class="btn btn-outline-secondary btn-sm me-2" id="logoutBtn" style="display:none;" onclick="logout()"><i class="fas fa-sign-out-alt"></i> 退出</button>
         </div>
     </div>
 </nav>
-
 <div class="container mt-4" id="mainContent">
     <div class="text-center py-5">
         <i class="fas fa-database fa-3x text-secondary mb-3"></i>
@@ -44,13 +47,37 @@
         <button class="btn btn-primary mt-2" onclick="showPage('upload')"><i class="fas fa-cloud-upload-alt"></i> 开始上传文件</button>
     </div>
 </div>
-
 <script>
     let currentColumns = [];
     let currentPreviewRows = [];
     let currentShape = [0, 0];
-    const MAX_FILE_SIZE_MB = 100;
+    const MAX_FILE_SIZE_MB = 16;
     const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+    let kmChartInstance = null;
+    let dbChartInstance = null;
+
+    async function checkLoginStatus() {
+        try {
+            const resp = await fetch('/history', {method: 'GET'});
+            if (resp.status === 200) {
+                const data = await resp.json();
+                if (!data.error) {
+                    document.getElementById('loginBtn').style.display = 'none';
+                    document.getElementById('logoutBtn').style.display = 'inline-block';
+                    return true;
+                }
+            }
+        } catch (e) {}
+        document.getElementById('loginBtn').style.display = 'inline-block';
+        document.getElementById('logoutBtn').style.display = 'none';
+        return false;
+    }
+
+    async function logout() {
+        try { await fetch('/logout', {method: 'POST'}); } catch(e) { console.warn(e); }
+        window.location.reload();
+    }
 
     function showToastMsg(msg, type = 'danger') {
         let toastDiv = document.createElement('div');
@@ -64,7 +91,7 @@
 
     function hasData() {
         if (!currentColumns.length || currentPreviewRows.length === 0) {
-            showToastMsg('⚠️ 暂未上传数据，请先上传文件', 'warning');
+            showToastMsg('暂未上传数据，请先上传文件', 'warning');
             return false;
         }
         return true;
@@ -72,7 +99,7 @@
 
     function escapeHtml(str) {
         if (!str) return '';
-        return str.replace(/[&<>]/g, function(m) {
+        return String(str).replace(/[&<>]/g, function (m) {
             if (m === '&') return '&amp;';
             if (m === '<') return '&lt;';
             if (m === '>') return '&gt;';
@@ -90,7 +117,7 @@
             html += '<tr>';
             currentColumns.forEach(col => {
                 let val = (row[col] !== undefined && row[col] !== null) ? row[col] : '';
-                html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 50))}</td>`;
+                html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 50))}${String(val).length > 50 ? '…' : ''}<\/td>`;
             });
             html += '</tr>';
         });
@@ -105,61 +132,23 @@
 
     async function showPage(page) {
         let html = '';
-        switch(page) {
+        switch (page) {
             case 'upload':
-                html = `
-                    <div class="card card-shadow p-4">
-                        <h4><i class="fas fa-cloud-upload-alt text-primary"></i> 上传数据文件</h4>
-                        <p class="text-muted">支持 .csv , .xlsx , .xls 格式 (单个文件最大 ${MAX_FILE_SIZE_MB}MB)</p>
-                        <input type="file" id="fileInput" class="form-control mb-3" accept=".csv,.xlsx,.xls">
-                        <button class="btn btn-primary w-25" onclick="uploadFile()"><i class="fas fa-upload"></i> 上传并解析</button>
-                        <div id="uploadStatus" class="mt-3"></div>
-                    </div>
-                `;
+                html = `<div class="card card-shadow p-4"><h4><i class="fas fa-cloud-upload-alt text-primary"></i> 上传数据文件</h4><p class="text-muted">支持 .csv , .xlsx , .xls 格式 (单个文件最大 ${MAX_FILE_SIZE_MB}MB)</p><input type="file" id="fileInput" class="form-control mb-3" accept=".csv,.xlsx,.xls"><button class="btn btn-primary w-25" onclick="uploadFile()"><i class="fas fa-upload"></i> 上传并解析</button><div id="uploadStatus" class="mt-3"></div></div>`;
                 break;
             case 'preview':
-                html = `
-                    <div class="card card-shadow p-4">
-                        <h4><i class="fas fa-eye"></i> 数据预览</h4>
-                        <div id="previewArea">${renderPreviewTable(currentPreviewRows)}</div>
-                        <div class="mt-3"><span class="badge bg-secondary">维度: ${currentShape[0]} 行 × ${currentShape[1]} 列</span></div>
-                        <a href="/export" class="btn btn-success mt-3 w-auto"><i class="fas fa-download"></i> 导出清洗后数据 (CSV)</a>
-                    </div>
-                `;
+                html = `<div class="card card-shadow p-4"><h4><i class="fas fa-eye"></i> 数据预览</h4><div id="previewArea">${renderPreviewTable(currentPreviewRows)}</div><div class="mt-3"><span class="badge bg-secondary">维度: ${currentShape[0]} 行 × ${currentShape[1]} 列</span></div><a href="/export" class="btn btn-success mt-3 w-auto"><i class="fas fa-download"></i> 导出清洗后数据 (CSV)</a></div>`;
                 break;
             case 'clean':
-                html = `
-                    <div class="card card-shadow p-4">
-                        <h4><i class="fas fa-broom"></i> 智能数据清洗</h4>
-                        <div class="row g-3">
-                            <div class="col-md-5">
-                                <label class="form-label fw-bold">缺失值处理策略</label>
-                                <select id="cleanMethod" class="form-select">
-                                    <option value="median">数值列中位数 / 非数值列众数</option>
-                                    <option value="mean">数值列均值填充</option>
-                                    <option value="drop">删除含缺失值的行</option>
-                                </select>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label fw-bold">Z-Score 异常阈值</label>
-                                <input id="zThreshold" type="number" class="form-control" value="3.0" step="0.5">
-                            </div>
-                            <div class="col-md-3 d-flex align-items-end">
-                                <button class="btn btn-warning w-100" onclick="cleanData()"><i class="fas fa-chalkboard-user"></i> 执行清洗</button>
-                            </div>
-                        </div>
-                        <div id="cleanResultArea" class="mt-4"></div>
-                        <div id="cleanPreviewArea" class="mt-3"></div>
-                    </div>
-                `;
+                html = `<div class="card card-shadow p-4"><h4><i class="fas fa-broom"></i> 智能数据清洗</h4><div class="row g-3"><div class="col-md-5"><label class="form-label fw-bold">缺失值处理策略</label><select id="cleanMethod" class="form-select"><option value="median">数值列中位数 / 非数值列众数</option><option value="mean">数值列均值填充</option><option value="drop">删除含缺失值的行</option></select></div><div class="col-md-4"><label class="form-label fw-bold">Z-Score 异常阈值</label><input id="zThreshold" type="number" class="form-control" value="3.0" step="0.5"></div><div class="col-md-3 d-flex align-items-end"><button class="btn btn-warning w-100" onclick="cleanData()"><i class="fas fa-chalkboard-user"></i> 执行清洗</button></div></div><div id="cleanResultArea" class="mt-4"></div><div id="cleanPreviewArea" class="mt-3"></div></div>`;
                 break;
             case 'visualize':
                 html = `
                     <div class="card card-shadow p-4 mb-4">
-                        <h4><i class="fas fa-chart-line"></i> 交互可视化</h4>
+                        <h4><i class="fas fa-chart-line"></i> 交互可视化 - 四图对比</h4>
                         <div class="row g-3 align-items-end">
                             <div class="col-md-3">
-                                <label>X轴 (推荐数值列)</label>
+                                <label>X轴 (支持数值/类别)</label>
                                 <select id="xColSelect" class="form-select">${getColumnOptions()}</select>
                             </div>
                             <div class="col-md-3">
@@ -167,57 +156,32 @@
                                 <select id="yColSelect" class="form-select">${getColumnOptions()}</select>
                             </div>
                             <div class="col-md-3">
-                                <label>图表类型</label>
-                                <select id="chartTypeSelect" class="form-select">
-                                    <option value="scatter">散点图 (相关性)</option>
-                                    <option value="line">折线图 (趋势)</option>
-                                    <option value="bar">柱状图</option>
-                                </select>
+                                <button class="btn btn-primary w-100" onclick="drawFourCharts()"><i class="fas fa-chart-simple"></i> 生成四图对比</button>
                             </div>
-                            <div class="col-md-3">
-                                <button class="btn btn-secondary w-100" onclick="drawCustomChart()"><i class="fas fa-chart-simple"></i> 生成图表</button>
+                            <div class="col-md-3 d-flex gap-1">
+                                <button class="btn btn-outline-info w-100" onclick="diagnoseColumn()"><i class="fas fa-stethoscope"></i> 诊断所选列</button>
                             </div>
                         </div>
-                        <div class="row mt-2">
-                            <div class="col-12">
-                                <button class="btn btn-outline-info btn-sm" onclick="diagnoseColumn()"><i class="fas fa-stethoscope"></i> 诊断所选Y轴列数据</button>
-                                <div id="diagnosticResult" class="diagnostic-box mt-2" style="display:none;"></div>
-                            </div>
-                        </div>
+                        <div id="diagnosticResult" class="diagnostic-box mt-2" style="display:none;"></div>
                     </div>
                     <div class="row">
-                        <div class="col-md-6 chart-box"><div id="defaultChart1" style="height: 380px;"></div><div class="text-center mt-2 text-secondary">📊 数据分布概览</div></div>
-                        <div class="col-md-6 chart-box"><div id="defaultChart2" style="height: 380px;"></div><div class="text-center mt-2 text-secondary">📈 趋势折线图</div></div>
+                        <div class="col-md-6 chart-box"><div id="fourChart1" class="four-chart-card"></div><div class="text-center mt-2 text-secondary">散点图</div></div>
+                        <div class="col-md-6 chart-box"><div id="fourChart2" class="four-chart-card"></div><div class="text-center mt-2 text-secondary">折线图</div></div>
                     </div>
                     <div class="row">
-                        <div class="col-12 chart-box"><div id="defaultChart3" style="height: 380px;"></div><div class="text-center mt-2 text-secondary">🥧 类别占比 (前10)</div></div>
-                    </div>
-                    <div class="chart-box" id="customChartContainer" style="display:none;">
-                        <div id="customChart" style="height: 400px;"></div>
-                        <p class="text-center text-muted small">自定义图表展示区</p>
+                        <div class="col-md-6 chart-box"><div id="fourChart3" class="four-chart-card"></div><div class="text-center mt-2 text-secondary">柱状图</div></div>
+                        <div class="col-md-6 chart-box"><div id="fourChart4" class="four-chart-card"></div><div class="text-center mt-2 text-secondary">饼图</div></div>
                     </div>
                 `;
-                setTimeout(() => { if(currentPreviewRows.length) initDefaultCharts(); else showToastMsg("上传数据后可视化将自动生成", "info"); }, 200);
                 break;
             case 'cluster':
-                html = `
-                    <div class="card card-shadow p-4">
-                        <h4><i class="fas fa-project-diagram"></i> 聚类分析对比 (K-Means vs DBSCAN)</h4>
-                        <p class="text-muted">基于标准化后的数值特征，自动使用前两维主成分展示，轮廓系数评估聚类质量</p>
-                        <button class="btn btn-success mb-4" onclick="runClusterComparison()"><i class="fas fa-play"></i> 开始聚类对比分析</button>
-                        <div id="clusterScoreArea" class="mb-4"></div>
-                        <div class="row">
-                            <div class="col-md-6 chart-box"><div id="clusterKMeans" style="height: 400px;"></div><p class="fw-bold text-center mt-2">K-Means 聚类分布</p></div>
-                            <div class="col-md-6 chart-box"><div id="clusterDBSCAN" style="height: 400px;"></div><p class="fw-bold text-center mt-2">DBSCAN 聚类分布</p></div>
-                        </div>
-                        <div class="alert alert-info mt-2 small"><i class="fas fa-info-circle"></i> 轮廓系数越接近1表示聚类效果越好，DBSCAN对参数敏感，可根据分数评估算法优越性。</div>
-                    </div>
-                `;
+                html = `<div class="card card-shadow p-4"><h4><i class="fas fa-project-diagram"></i> 聚类分析对比 (K-Means vs DBSCAN)</h4><p class="text-muted">基于标准化后的数值特征，自动使用前两维主成分展示，轮廓系数评估聚类质量</p><button class="btn btn-success mb-4" onclick="runClusterComparison()"><i class="fas fa-play"></i> 开始聚类对比分析</button><div id="clusterScoreArea" class="mb-4"></div><div class="row"><div class="col-md-6 chart-box"><div id="clusterKMeans" style="height: 400px;"></div><p class="fw-bold text-center mt-2">K-Means 聚类分布</p></div><div class="col-md-6 chart-box"><div id="clusterDBSCAN" style="height: 400px;"></div><p class="fw-bold text-center mt-2">DBSCAN 聚类分布</p></div></div><div class="alert alert-info mt-2 small"><i class="fas fa-info-circle"></i> 轮廓系数越接近1表示聚类效果越好，DBSCAN对参数敏感，可根据分数评估算法优越性。</div></div>`;
                 break;
             case 'history':
-                await loadHistoryMock();
+                await loadHistory();
                 return;
-            default: html = '<div class="alert alert-info">请从导航栏选择功能</div>';
+            default:
+                html = '<div class="alert alert-info">请从导航栏选择功能</div>';
         }
         document.getElementById('mainContent').innerHTML = html;
         if (page === 'visualize') {
@@ -232,6 +196,108 @@
         }
     }
 
+    async function loadHistory() {
+        const resp = await fetch('/history');
+        const data = await resp.json();
+        let html = `<div class="card card-shadow p-4"><h4><i class="fas fa-history"></i> 操作历史记录</h4>`;
+        if (data.error) {
+            if (data.error === '未登录！查看历史记录需要登录！') {
+                html += `<div class="alert alert-warning">您尚未登录，请先<a href="#" onclick="showLoginModal();return false;">登录</a>。</div>`;
+            } else {
+                html += `<div class="alert alert-danger">${data.error}</div>`;
+            }
+        } else if (data.length === 0) {
+            html += `<p>暂无历史记录</p>`;
+        } else {
+            html += `<table class="table table-striped"><thead><tr><th>文件名</th><th>分析类型</th><th>时间</th></tr></thead><tbody>`;
+            data.forEach(r => {
+                html += `<tr><td>${escapeHtml(r.filename)}</td><td>${escapeHtml(r.type)}</td><td>${escapeHtml(r.time)}</td></tr>`;
+            });
+            html += `</tbody></table>`;
+        }
+        html += `<button class="btn btn-primary mt-3" onclick="showPage('upload')"><i class="fas fa-arrow-left"></i> 返回首页</button></div>`;
+        document.getElementById('mainContent').innerHTML = html;
+    }
+
+    function showLoginModal() {
+        const modalHtml = `
+            <div class="modal fade" id="globalLoginModal" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header bg-dark text-white">
+                            <h5 class="modal-title"><i class="fas fa-lock"></i> 用户登录 / 注册</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <input type="text" id="loginUsername" class="form-control mb-2" placeholder="用户名">
+                            <input type="password" id="loginPassword" class="form-control mb-2" placeholder="密码">
+                            <button class="btn btn-primary me-2" onclick="doLogin()">登录</button>
+                            <button class="btn btn-outline-secondary" onclick="doRegister()">注册</button>
+                            <hr>
+</div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-sm btn-light" data-bs-dismiss="modal">关闭</button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        if (!document.getElementById('globalLoginModal')) {
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+        }
+        const modalEl = document.getElementById('globalLoginModal');
+        const bootstrapModal = new bootstrap.Modal(modalEl);
+        bootstrapModal.show();
+    }
+
+    async function doLogin() {
+        const username = document.getElementById('loginUsername').value;
+        const password = document.getElementById('loginPassword').value;
+        if (!username || !password) { showToastMsg('请填写用户名和密码', 'warning'); return; }
+        const resp = await fetch('/login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password})
+        });
+        const data = await resp.json();
+        if (data.status === 'success') {
+            showToastMsg('登录成功', 'success');
+            const modal = bootstrap.Modal.getInstance(document.getElementById('globalLoginModal'));
+            modal.hide();
+            window.location.reload();
+        } else {
+            showToastMsg('登录失败：' + (data.message || '未知错误'), 'danger');
+        }
+    }
+
+    async function doRegister() {
+        const username = document.getElementById('loginUsername').value;
+        const password = document.getElementById('loginPassword').value;
+        if (!username || !password) { showToastMsg('请填写用户名和密码', 'warning'); return; }
+        const resp = await fetch('/register', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password})
+        });
+        const data = await resp.json();
+        if (data.status === 'success') {
+            showToastMsg('注册成功，请登录', 'success');
+        } else {
+            showToastMsg('注册失败：' + (data.message || '未知错误'), 'danger');
+        }
+    }
+
+    // 彻底清理 CSV 文本中的 nbsp 和 &nbsp; 实体，以及可能的分号
+    function cleanCsvText(rawText) {
+        // 替换 &nbsp; 和 nbsp;（可能出现 &nbsp; 或 nbsp; 或 &nbsp）
+        let cleaned = rawText.replace(/&nbsp;|nbsp;|&nbsp/g, ' ');
+        // 替换多个连续空格为单个空格（可选）
+        cleaned = cleaned.replace(/[ ]+/g, ' ');
+        // 去除每行开头结尾的多余空格（保留列分隔）
+        const lines = cleaned.split(/\r?\n/);
+        const processedLines = lines.map(line => line.trim().replace(/\s+$/, ''));
+        return processedLines.join('\n');
+    }
+
     async function uploadFile() {
         const fileInput = document.getElementById('fileInput');
         const file = fileInput.files[0];
@@ -240,15 +306,27 @@
             showToastMsg(`文件过大 (${(file.size / 1024 / 1024).toFixed(2)}MB)，请上传小于 ${MAX_FILE_SIZE_MB}MB 的文件。如需上传更大文件，请联系管理员调整后端限制。`, 'danger');
             return;
         }
+
+        let processedFile = file;
+        if (file.name.toLowerCase().endsWith('.csv')) {
+            try {
+                const text = await file.text();
+                const cleanedText = cleanCsvText(text);
+                processedFile = new File([cleanedText], file.name, { type: 'text/csv' });
+            } catch (err) {
+                showToastMsg('读取文件失败，无法清理 &nbsp;', 'warning');
+            }
+        }
+
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('file', processedFile);
         try {
             const resp = await fetch('/upload', { method: 'POST', body: formData });
             const data = await resp.json();
             if (data.columns) {
                 currentColumns = data.columns;
                 currentPreviewRows = data.preview || [];
-                currentShape = data.shape || [0,0];
+                currentShape = data.shape || [0, 0];
                 document.getElementById('uploadStatus').innerHTML = `<div class="alert alert-success"><i class="fas fa-check-circle"></i> 上传成功！行数: ${currentShape[0]}, 列数: ${currentShape[1]}</div>`;
                 showToastMsg(`文件 "${file.name}" 加载成功，共 ${currentShape[0]} 行数据`, 'success');
             } else {
@@ -258,7 +336,9 @@
                 }
                 showToastMsg('上传失败: ' + errMsg, 'danger');
             }
-        } catch(e) { showToastMsg('网络错误: '+e.message, 'danger'); }
+        } catch (e) {
+            showToastMsg('网络错误: ' + e.message, 'danger');
+        }
     }
 
     async function cleanData() {
@@ -268,8 +348,8 @@
         try {
             const resp = await fetch('/clean', {
                 method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ method: method, z_threshold: zThreshold })
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({method: method, z_threshold: zThreshold})
             });
             const data = await resp.json();
             if (data.preview) {
@@ -281,214 +361,274 @@
             } else {
                 showToastMsg('清洗失败: ' + (data.error || '服务错误'), 'danger');
             }
-        } catch(e) { showToastMsg('清洗请求异常: '+e.message, 'danger'); }
-    }
-
-    // 诊断所选Y轴列的数据情况（通过直接查看预览数据）
-    function diagnoseColumn() {
-        if (!hasData()) return;
-        const yCol = document.getElementById('yColSelect').value;
-        if (!yCol) { showToastMsg('请先选择Y轴列', 'warning'); return; }
-        // 提取预览数据中该列的前10个值
-        let samples = currentPreviewRows.slice(0, 10).map(row => row[yCol]);
-        let sampleStr = samples.map(v => `"${v}" (${typeof v})`).join(', ');
-        let isAllNumber = samples.every(v => typeof v === 'number');
-        let diagHtml = `<strong>列 "${yCol}" 数据诊断</strong><br>`;
-        diagHtml += `前10个值: ${sampleStr}<br>`;
-        diagHtml += `是否全部为数值类型: ${isAllNumber ? '✅ 是' : '❌ 否'}<br>`;
-        if (!isAllNumber) {
-            diagHtml += `<span class="text-danger">⚠️ 该列包含非数值数据，无法直接用于图表。请清洗数据（如将字符串转为数值），或选择其他数值列。</span><br>`;
-            diagHtml += `常见原因：数字中包含逗号、空格、单位符号等。建议后端在读取CSV时使用 `;
-            diagHtml += `pd.to_numeric(..., errors='coerce') 处理。`;
-        } else {
-            diagHtml += `<span class="text-success">✅ 该列数据均为数值，可以正常绘图。</span>`;
+        } catch (e) {
+            showToastMsg('清洗请求异常: ' + e.message, 'danger');
         }
-        const diagDiv = document.getElementById('diagnosticResult');
-        diagDiv.innerHTML = diagHtml;
-        diagDiv.style.display = 'block';
     }
 
-    async function drawCustomChart() {
+    function diagnoseColumn() {
         if (!hasData()) return;
         const xCol = document.getElementById('xColSelect').value;
         const yCol = document.getElementById('yColSelect').value;
-        const chartType = document.getElementById('chartTypeSelect').value;
-        if (!xCol || !yCol) { showToastMsg('请选择X/Y轴列', 'warning'); return; }
-        try {
-            const resp = await fetch(`/chart?x=${encodeURIComponent(xCol)}&y=${encodeURIComponent(yCol)}`);
-            const data = await resp.json();
-            if (!data.data || data.data.length === 0) {
-                showToastMsg(`所选列无有效数值数据。请使用“诊断”按钮检查 ${yCol} 列，确保其为数值类型。`, 'warning');
-                return;
-            }
-            let chartDom = document.getElementById('customChart');
-            let container = document.getElementById('customChartContainer');
-            if (!chartDom) {
-                const main = document.getElementById('mainContent');
-                const newDiv = document.createElement('div');
-                newDiv.className = 'chart-box mt-3';
-                newDiv.id = 'customChartContainer';
-                newDiv.innerHTML = '<div id="customChart" style="height:400px;"></div><p class="text-center text-muted">自定义图表</p>';
-                main.appendChild(newDiv);
-                chartDom = document.getElementById('customChart');
-            } else {
-                container.style.display = 'block';
-            }
-            const myChart = echarts.init(chartDom);
-            let seriesData = data.data.map(p => [p[0], p[1]]);
-            let option = {
-                title: { text: `${xCol} vs ${yCol} (${chartType})`, left: 'center' },
-                tooltip: { trigger: 'axis' },
-                xAxis: { name: xCol, type: 'value' },
-                yAxis: { name: yCol, type: 'value' }
-            };
-            if (chartType === 'scatter') {
-                option.series = [{ type: 'scatter', data: seriesData, symbolSize: 8, itemStyle: { color: '#3b82f6' } }];
-            } else if (chartType === 'line') {
-                seriesData.sort((a,b)=> a[0]-b[0]);
-                option.series = [{ type: 'line', data: seriesData, smooth: true, lineStyle: { width: 2 } }];
-            } else if (chartType === 'bar') {
-                let barData = seriesData.slice(0, 50);
-                option.xAxis = { type: 'category', name: xCol, axisLabel: { rotate: 30 } };
-                option.series = [{ type: 'bar', data: barData.map(d => d[1]), itemStyle: { borderRadius: [4,4,0,0] } }];
-                option.xAxis.data = barData.map(d => d[0].toFixed(2));
-            }
-            myChart.setOption(option);
-            document.getElementById('customChartContainer').style.display = 'block';
-        } catch(e) { showToastMsg('图表生成失败: '+e.message, 'danger'); }
+        if (!xCol || !yCol) { showToastMsg('请选择X和Y轴列', 'warning'); return; }
+        let samples = currentPreviewRows.slice(0, 10);
+        let xSamples = samples.map(r => r[xCol]);
+        let ySamples = samples.map(r => r[yCol]);
+        let xAllNum = xSamples.every(v => !isNaN(parseFloat(v)) && isFinite(v));
+        let yAllNum = ySamples.every(v => !isNaN(parseFloat(v)) && isFinite(v));
+        let diagHtml = `<strong>列诊断</strong><br>`;
+        diagHtml += `X轴 "${xCol}" : ${xAllNum ? '可视为数值' : '非数值(字符串/类别)'}<br>`;
+        diagHtml += `Y轴 "${yCol}" : ${yAllNum ? '数值列' : '错误！非数值列，图表将无法使用！'}<br>`;
+        if (!yAllNum) {
+            diagHtml += `<span class="text-danger">Y轴必须为数值列，请重新选择或清洗数据。</span>`;
+        } else if (!xAllNum) {
+            diagHtml += `<span class="text-info">X轴为类别数据，图表将自动使用类目轴，可行。</span>`;
+        } else {
+            diagHtml += `<span class="text-success">两列均为数值，可自由选择图表类型。</span>`;
+        }
+        document.getElementById('diagnosticResult').innerHTML = diagHtml;
+        document.getElementById('diagnosticResult').style.display = 'block';
     }
 
-    function initDefaultCharts() {
-        if (!currentPreviewRows.length) return;
-        let sampleRows = currentPreviewRows.slice(0, 30);
-        let firstCol = currentColumns[0] || 'index';
-        let numericCol = currentColumns.find(c => typeof sampleRows[0][c] === 'number') || currentColumns[1];
-        let xVals = sampleRows.map(r => String(r[firstCol] ?? ''));
-        let yVals = sampleRows.map(r => typeof r[numericCol] === 'number' ? r[numericCol] : 0);
-        let chart1 = echarts.init(document.getElementById('defaultChart1'));
-        chart1.setOption({
-            tooltip: { trigger: 'axis' },
-            xAxis: { type: 'category', data: xVals, axisLabel: { rotate: 35, interval: 5 } },
-            yAxis: { type: 'value', name: numericCol },
-            series: [{ type: 'bar', data: yVals, itemStyle: { color: '#5470c6' } }],
-            title: { text: `Top30 ${firstCol} vs ${numericCol} 柱状图` }
-        });
-        let chart2 = echarts.init(document.getElementById('defaultChart2'));
-        chart2.setOption({
-            tooltip: { trigger: 'axis' },
-            xAxis: { type: 'category', data: xVals, axisLabel: { rotate: 35 } },
-            yAxis: { type: 'value' },
-            series: [{ type: 'line', data: yVals, smooth: true, areaStyle: { opacity: 0.2 } }],
-            title: { text: '数据趋势展示' }
-        });
-        let pieDataMap = {};
-        let limit = Math.min(12, sampleRows.length);
-        for (let i = 0; i < limit; i++) {
-            let name = String(sampleRows[i][firstCol] || '类别');
-            let val = typeof sampleRows[i][numericCol] === 'number' ? sampleRows[i][numericCol] : 1;
-            pieDataMap[name] = (pieDataMap[name] || 0) + val;
+    async function drawFourCharts() {
+        if (!hasData()) return;
+        const xCol = document.getElementById('xColSelect').value;
+        const yCol = document.getElementById('yColSelect').value;
+        if (!xCol || !yCol) { showToastMsg('请选择X和Y轴列', 'warning'); return; }
+
+        let yIsNumber = true;
+        for (let i = 0; i < Math.min(currentPreviewRows.length, 20); i++) {
+            const val = currentPreviewRows[i][yCol];
+            if (val === undefined || val === null || (typeof val !== 'number' && isNaN(parseFloat(val)))) {
+                yIsNumber = false;
+                break;
+            }
         }
-        let pieData = Object.entries(pieDataMap).map(([n,v]) => ({ name: n, value: v }));
-        let chart3 = echarts.init(document.getElementById('defaultChart3'));
-        chart3.setOption({
-            title: { text: '前几类占比分布' },
-            tooltip: { trigger: 'item' },
-            series: [{ type: 'pie', radius: '55%', data: pieData, label: { show: true } }]
+        if (!yIsNumber) {
+            showToastMsg(`Y轴列 "${yCol}" 不是数值列，无法生成图表。请选择数值列或清洗数据。`, 'warning');
+            return;
+        }
+
+        const containers = ['fourChart1', 'fourChart2', 'fourChart3', 'fourChart4'];
+        containers.forEach(id => {
+            const div = document.getElementById(id);
+            if (!div) return;
+
+            // 销毁已存在的 ECharts 实例
+
+            const oldInstance = echarts.getInstanceByDom(div);
+            if (oldInstance) {
+                oldInstance.dispose();
+            }
+
+            if (div) div.innerHTML = '<div class="text-center p-5"><i class="fas fa-spinner fa-pulse"></i> 加载中...</div>';
         });
+
+        try {
+            const resp = await fetch(`/chart?x=${encodeURIComponent(xCol)}&y=${encodeURIComponent(yCol)}`);
+            const text = await resp.text();
+            let data;
+            try { data = JSON.parse(text); } catch(e) {
+                throw new Error(`后端返回无效数据: ${text.substring(0, 100)}`);
+            }
+            const points = data.data;
+            if (!points || points.length === 0) {
+                showToastMsg('所选列无有效数据，无法生成图表', 'warning');
+                return;
+            }
+
+            const xRaw = points.map(p => p[0]);
+            const yRaw = points.map(p => p[1]);
+            const isXNum = xRaw.every(v => !isNaN(parseFloat(v)) && isFinite(v));
+            let xAxisData, seriesData;
+            if (isXNum) {
+                const sorted = points.map(p => [parseFloat(p[0]), p[1]]).sort((a,b) => a[0] - b[0]);
+                xAxisData = sorted.map(p => p[0]);
+                seriesData = sorted.map(p => p[1]);
+            } else {
+                xAxisData = xRaw.map(v => String(v));
+                seriesData = yRaw;
+            }
+
+            let scatterChart = echarts.init(document.getElementById('fourChart1'));
+            scatterChart.setOption({
+                title: {text: `${xCol} vs ${yCol} 散点图`, left: 'center'},
+                tooltip: {trigger: 'axis'},
+                xAxis: {name: xCol, type: isXNum ? 'value' : 'category', data: isXNum ? undefined : xAxisData},
+                yAxis: {name: yCol, type: 'value'},
+                series: [{type: 'scatter', data: points.map(p => isXNum ? [parseFloat(p[0]), p[1]] : p), symbolSize: 8}]
+            });
+            let lineChart = echarts.init(document.getElementById('fourChart2'));
+            lineChart.setOption({
+                title: {text: `${xCol} vs ${yCol} 折线图`, left: 'center'},
+                tooltip: {trigger: 'axis'},
+                xAxis: {name: xCol, type: isXNum ? 'value' : 'category', data: isXNum ? undefined : xAxisData},
+                yAxis: {name: yCol, type: 'value'},
+                series: [{type: 'line', data: seriesData, smooth: true}]
+            });
+            let barChart = echarts.init(document.getElementById('fourChart3'));
+            barChart.setOption({
+                title: {text: `${xCol} vs ${yCol} 柱状图`, left: 'center'},
+                tooltip: {trigger: 'axis'},
+                xAxis: {name: xCol, type: isXNum ? 'value' : 'category', data: isXNum ? undefined : xAxisData, axisLabel: {rotate: 30, interval: 0}},
+                yAxis: {name: yCol, type: 'value'},
+                series: [{type: 'bar', data: seriesData, itemStyle: {borderRadius: [4,4,0,0]}}]
+            });
+            let pieData = [];
+            if (!isXNum) {
+                const agg = new Map();
+                for (let i = 0; i < xAxisData.length; i++) {
+                    const cat = xAxisData[i];
+                    const val = yRaw[i];
+                    agg.set(cat, (agg.get(cat) || 0) + val);
+                }
+                pieData = Array.from(agg.entries()).map(([name, value]) => ({name, value}));
+                if (pieData.length > 10) pieData = pieData.slice(0, 10);
+            } else {
+                pieData = points.slice(0, 10).map((p, idx) => ({name: `${xCol}=${p[0]}`, value: p[1]}));
+            }
+            let pieChart = echarts.init(document.getElementById('fourChart4'));
+            pieChart.setOption({
+                title: {text: `${yCol} 分布 (基于${xCol})`, left: 'center'},
+                tooltip: {trigger: 'item'},
+                series: [{type: 'pie', radius: '55%', data: pieData, label: {show: true, formatter: '{b}: {d}%'}}]
+            });
+
+            [scatterChart, lineChart, barChart, pieChart].forEach(ch => ch.resize());
+        } catch (e) {
+            showToastMsg('生成四图失败: ' + e.message, 'danger');
+            containers.forEach(id => {
+                const div = document.getElementById(id);
+                if (div) div.innerHTML = '<div class="alert alert-danger">图表生成失败</div>';
+            });
+        }
     }
 
     async function runClusterComparison() {
         if (!hasData()) return;
         const area = document.getElementById('clusterScoreArea');
-        area.innerHTML = '<div class="spinner-border text-primary" role="status"> 分析中...</div>';
+        const kmDiv = document.getElementById('clusterKMeans');
+        const dbDiv = document.getElementById('clusterDBSCAN');
+
+        if (kmChartInstance) { kmChartInstance.dispose(); kmChartInstance = null; }
+        if (dbChartInstance) { dbChartInstance.dispose(); dbChartInstance = null; }
+
+        area.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">分析中...</span></div><p>正在计算聚类，请稍候...</p></div>';
+        if (kmDiv) kmDiv.innerHTML = '<div class="text-center p-5">等待K-Means结果...</div>';
+        if (dbDiv) dbDiv.innerHTML = '<div class="text-center p-5">等待DBSCAN结果...</div>';
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
         try {
-            const resp = await fetch('/cluster', { method: 'POST' });
-            const data = await resp.json();
-            if (!data.scores) throw new Error('聚类失败，后端异常');
+            const resp = await fetch('/cluster', {method: 'POST', signal: controller.signal});
+            clearTimeout(timeoutId);
+            const text = await resp.text();
+            let data;
+            try { data = JSON.parse(text); } catch(e) {
+                throw new Error(`后端返回无效数据: ${text.substring(0, 100)}`);
+            }
+            if (!data.scores) throw new Error('缺少 scores 字段');
+
+            const order = ['K-Means', 'DBSCAN'];
             let scoreHtml = '<div class="row cluster-score-card g-3">';
-            for (let algo in data.scores) {
+            for (let algo of order) {
                 let score = data.scores[algo];
+                if (score === undefined) continue;
                 let percent = Math.min(100, Math.max(0, (score * 100).toFixed(1)));
                 let barColor = score > 0.6 ? 'bg-success' : (score > 0.4 ? 'bg-warning' : 'bg-danger');
-                scoreHtml += `
-                    <div class="col-md-6">
-                        <strong><i class="fas fa-chart-line"></i> ${algo}</strong> 轮廓系数: <span class="fw-bold">${score.toFixed(4)}</span>
-                        <div class="progress mt-1" style="height: 24px;">
-                            <div class="progress-bar ${barColor} progress-bar-striped" style="width: ${percent}%;">${percent}%</div>
-                        </div>
-                    </div>
-                `;
+                scoreHtml += `<div class="col-md-6"><strong><i class="fas fa-chart-line"></i> ${algo}</strong> 轮廓系数: <span class="fw-bold">${score.toFixed(4)}</span><div class="progress mt-1" style="height: 24px;"><div class="progress-bar ${barColor} progress-bar-striped" style="width: ${percent}%;">${percent}%</div></div></div>`;
             }
             scoreHtml += '</div>';
             area.innerHTML = scoreHtml;
-            if (data.kmeans && data.kmeans.length) {
-                let kmChart = echarts.init(document.getElementById('clusterKMeans'));
-                kmChart.setOption({ title: { text: 'K-Means 聚类 (标准化空间)' }, tooltip: { trigger: 'item' }, xAxis: { name: '特征1(标准化)' }, yAxis: { name: '特征2(标准化)' }, series: [{ type: 'scatter', data: data.kmeans, symbolSize: 8, itemStyle: { color: '#3b82f6', opacity: 0.7 } }] });
+
+            function buildSeriesByLabels(points, labels) {
+                if (!points || points.length === 0) return [];
+                const colorPalette = ['#5470c6', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'];
+                const groups = {};
+                for (let i = 0; i < points.length; i++) {
+                    const lbl = labels[i];
+                    if (!groups[lbl]) groups[lbl] = [];
+                    groups[lbl].push(points[i]);
+                }
+                const series = [];
+                for (let lbl in groups) {
+                    let name = (parseInt(lbl) === -1) ? '噪声点' : `簇 ${lbl}`;
+                    let color = colorPalette[Math.abs(parseInt(lbl)) % colorPalette.length];
+                    series.push({
+                        name: name,
+                        type: 'scatter',
+                        data: groups[lbl],
+                        symbolSize: 8,
+                        itemStyle: {color: color, opacity: 0.7}
+                    });
+                }
+                return series;
             }
-            if (data.dbscan && data.dbscan.length) {
-                let dbChart = echarts.init(document.getElementById('clusterDBSCAN'));
-                dbChart.setOption({ title: { text: 'DBSCAN 聚类 (ε=0.5, min=5)' }, xAxis: { name: '特征1(标准化)' }, yAxis: { name: '特征2(标准化)' }, series: [{ type: 'scatter', data: data.dbscan, symbolSize: 8, itemStyle: { color: '#f97316' } }] });
+
+            if (data.kmeans && data.kmeans.length && data.kmeans_labels) {
+                if (kmDiv) {
+                    kmDiv.innerHTML = '';
+                    kmChartInstance = echarts.init(kmDiv);
+                    const series = buildSeriesByLabels(data.kmeans, data.kmeans_labels);
+                    kmChartInstance.setOption({
+                        title: {text: 'K-Means 聚类结果 (按簇着色)', left: 'center'},
+                        tooltip: {trigger: 'item'},
+                        xAxis: {name: '特征1(标准化)', type: 'value'},
+                        yAxis: {name: '特征2(标准化)', type: 'value'},
+                        grid: { containLabel: true, left: 60, right: 120 },
+                        series: series,
+                        legend: { data: series.map(s => s.name), orient: 'vertical', left: 'left', right: 'auto' }
+                    });
+                    kmChartInstance.resize();
+                }
+            } else {
+                if (kmDiv) kmDiv.innerHTML = '<div class="alert alert-warning">K-Means 结果数据不足，无法绘制按簇散点图。</div>';
             }
-        } catch(e) {
-            area.innerHTML = `<div class="alert alert-danger">聚类分析失败: ${e.message}。请确保数据包含至少2个数值列且无缺失值。</div>`;
+
+            if (data.dbscan && data.dbscan.length && data.dbscan_labels) {
+                if (dbDiv) {
+                    dbDiv.innerHTML = '';
+                    dbChartInstance = echarts.init(dbDiv);
+                    const series = buildSeriesByLabels(data.dbscan, data.dbscan_labels);
+                    dbChartInstance.setOption({
+                        title: {text: 'DBSCAN 聚类结果 (按簇着色)', left: 'center'},
+                        tooltip: {trigger: 'item'},
+                        xAxis: {name: '特征1(标准化)', type: 'value'},
+                        yAxis: {name: '特征2(标准化)', type: 'value'},
+                        grid: { containLabel: true, left: 60, right: 120 },
+                        series: series,
+                        legend: { data: series.map(s => s.name), orient: 'vertical', left: 'left', right: 'auto' }
+                    });
+                    dbChartInstance.resize();
+                }
+            } else {
+                if (dbDiv) dbDiv.innerHTML = '<div class="alert alert-warning">DBSCAN 结果数据不足，无法绘制按簇散点图。</div>';
+            }
+        } catch (e) {
+            clearTimeout(timeoutId);
+            let errMsg = e.name === 'AbortError' ? '请求超时（30秒）' : `聚类分析失败: ${e.message}`;
+            area.innerHTML = `<div class="alert alert-danger">${errMsg}</div>`;
+            if (kmDiv) kmDiv.innerHTML = '<div class="alert alert-danger">聚类失败</div>';
+            if (dbDiv) dbDiv.innerHTML = '<div class="alert alert-danger">聚类失败</div>';
         }
     }
 
-    async function loadHistoryMock() {
-        let html = `<div class="card card-shadow p-4">
-                        <h4><i class="fas fa-history"></i> 操作历史记录</h4>
-                        <div class="alert alert-secondary"><i class="fas fa-code-branch"></i> 目前历史记录功能正在扩展中，后续版本支持数据库持久化存储。您的清洗、聚类等操作记录将展示在此处。</div>
-                        <button class="btn btn-primary mt-3" onclick="showPage('upload')"><i class="fas fa-arrow-left"></i> 返回首页</button>
-                    </div>`;
-        document.getElementById('mainContent').innerHTML = html;
-    }
-
-    function showLoginModal() {
-        const modalHtml = `
-            <div class="modal fade" id="globalLoginModal" tabindex="-1" data-bs-backdrop="static">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <div class="modal-header bg-dark text-white">
-                            <h5 class="modal-title"><i class="fas fa-lock"></i> 用户中心 · 演示模式</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="alert alert-info">🌟 多用户登录属于扩展功能，当前展示数据分析核心流程。<br>后端已实现上传/清洗/聚类/可视化接口，可直接体验完整数据分析服务。</div>
-                            <div class="d-grid gap-2">
-                                <button class="btn btn-outline-success" onclick="demoGuestLogin()">🚪 访客体验 (直接使用系统)</button>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        if (!document.getElementById('globalLoginModal')) {
-            document.body.insertAdjacentHTML('beforeend', modalHtml);
-        }
-        const modalEl = document.getElementById('globalLoginModal');
-        const bootstrapModal = new bootstrap.Modal(modalEl);
-        bootstrapModal.show();
-    }
-    function demoGuestLogin() {
-        let modal = bootstrap.Modal.getInstance(document.getElementById('globalLoginModal'));
-        if(modal) modal.hide();
-        showToastMsg('您已进入访客模式，可使用全部分析功能', 'success');
-    }
     function loadBootstrapJS() {
-        if(!window.bootstrap) {
+        if (!window.bootstrap) {
             let script = document.createElement('script');
             script.src = "https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js";
             document.head.appendChild(script);
         }
     }
     loadBootstrapJS();
-    window.onload = () => { showPage('upload'); };
+    window.onload = () => {
+        checkLoginStatus();
+        showPage('upload');
+    };
 </script>
 <footer>
-    <i class="fas fa-chart-pie"></i> 智能数据分析系统 | 数据清洗 · 可视化 · 聚类对比 | 支持 CSV/Excel
+    <i class="fas fa-chart-pie"></i> 数据分析系统
 </footer>
 </body>
 </html>
